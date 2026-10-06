@@ -11,9 +11,10 @@ import java.util.List;
 
 public final class NotificationDatabase extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "notification_history.db";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 2;
     private static final String TABLE = "notifications";
     private static volatile NotificationDatabase instance;
+    private final Context appContext;
 
     public static NotificationDatabase getInstance(Context context) {
         if (instance == null) {
@@ -26,6 +27,7 @@ public final class NotificationDatabase extends SQLiteOpenHelper {
 
     private NotificationDatabase(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
+        appContext = context.getApplicationContext();
     }
 
     @Override
@@ -47,7 +49,32 @@ public final class NotificationDatabase extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Schema changes will be migrated here to preserve notification history.
+        if (oldVersion < 2) {
+            ArrayList<ContentValues> migrations = new ArrayList<>();
+            try (Cursor cursor = db.query(TABLE, new String[]{"_id", "app_name", "title", "body"},
+                    null, null, null, null, null)) {
+                while (cursor.moveToNext()) {
+                    ContentValues values = new ContentValues();
+                    values.put("_id", cursor.getLong(0));
+                    values.put("app_name", cursor.getString(1));
+                    values.put("title", cursor.getString(2));
+                    values.put("body", cursor.getString(3));
+                    migrations.add(values);
+                }
+            }
+            for (ContentValues old : migrations) {
+                long id = old.getAsLong("_id");
+                ContentValues encrypted = new ContentValues();
+                try {
+                    encrypted.put("app_name", NotificationCrypto.encrypt(appContext, old.getAsString("app_name")));
+                    encrypted.put("title", NotificationCrypto.encrypt(appContext, old.getAsString("title")));
+                    encrypted.put("body", NotificationCrypto.encrypt(appContext, old.getAsString("body")));
+                } catch (Exception e) {
+                    throw new IllegalStateException("Could not encrypt existing notification history", e);
+                }
+                db.update(TABLE, encrypted, "_id=?", new String[]{String.valueOf(id)});
+            }
+        }
     }
 
     public synchronized void save(String sourceKey, String packageName, String appName, String title,
@@ -57,9 +84,13 @@ public final class NotificationDatabase extends SQLiteOpenHelper {
         ContentValues values = new ContentValues();
         values.put("source_key", sourceKey);
         values.put("package_name", packageName);
-        values.put("app_name", appName == null ? packageName : appName);
-        values.put("title", title == null ? "" : title);
-        values.put("body", body == null ? "" : body);
+        try {
+            values.put("app_name", NotificationCrypto.encrypt(appContext, appName == null ? packageName : appName));
+            values.put("title", NotificationCrypto.encrypt(appContext, title == null ? "" : title));
+            values.put("body", NotificationCrypto.encrypt(appContext, body == null ? "" : body));
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not encrypt notification history", e);
+        }
         values.put("posted_at", postedAt);
         values.put("clearable", clearable ? 1 : 0);
         values.put("group_key", groupKey);
@@ -81,9 +112,9 @@ public final class NotificationDatabase extends SQLiteOpenHelper {
                         cursor.getLong(cursor.getColumnIndexOrThrow("_id")),
                         cursor.getString(cursor.getColumnIndexOrThrow("source_key")),
                         cursor.getString(cursor.getColumnIndexOrThrow("package_name")),
-                        cursor.getString(cursor.getColumnIndexOrThrow("app_name")),
-                        cursor.getString(cursor.getColumnIndexOrThrow("title")),
-                        cursor.getString(cursor.getColumnIndexOrThrow("body")),
+                        decrypt(cursor.getString(cursor.getColumnIndexOrThrow("app_name"))),
+                        decrypt(cursor.getString(cursor.getColumnIndexOrThrow("title"))),
+                        decrypt(cursor.getString(cursor.getColumnIndexOrThrow("body"))),
                         cursor.getLong(cursor.getColumnIndexOrThrow("posted_at")),
                         cursor.getInt(cursor.getColumnIndexOrThrow("is_read")) != 0,
                         cursor.getInt(cursor.getColumnIndexOrThrow("clearable")) != 0,
@@ -105,6 +136,17 @@ public final class NotificationDatabase extends SQLiteOpenHelper {
 
     public synchronized void clearAll() {
         getWritableDatabase().delete(TABLE, null, null);
+    }
+
+    private String decrypt(String value) {
+        try { return NotificationCrypto.decrypt(appContext, value); }
+        catch (Exception e) { return "[History unavailable: encryption key error]"; }
+    }
+
+    public synchronized void pruneOlderThanDays(int days) {
+        if (days <= 0) return;
+        long cutoff = System.currentTimeMillis() - days * 24L * 60L * 60L * 1000L;
+        getWritableDatabase().delete(TABLE, "posted_at < ?", new String[]{String.valueOf(cutoff)});
     }
 
     public synchronized int count() {

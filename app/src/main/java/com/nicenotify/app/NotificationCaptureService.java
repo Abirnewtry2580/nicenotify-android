@@ -70,8 +70,11 @@ public final class NotificationCaptureService extends NotificationListenerServic
         final boolean clearable = sbn.isClearable();
         final String groupKey = sbn.getGroupKey();
 
-        writes.execute(() -> NotificationDatabase.getInstance(getApplicationContext())
-                .save(sourceKey, packageName, savedAppName, savedTitle, savedBody, postedAt, clearable, groupKey));
+        writes.execute(() -> {
+            NotificationDatabase database = NotificationDatabase.getInstance(getApplicationContext());
+            database.save(sourceKey, packageName, savedAppName, savedTitle, savedBody, postedAt, clearable, groupKey);
+            database.pruneOlderThanDays(NotificationPreferences.getRetentionDays(getApplicationContext()));
+        });
     }
 
     private static String text(Bundle extras, String key) {

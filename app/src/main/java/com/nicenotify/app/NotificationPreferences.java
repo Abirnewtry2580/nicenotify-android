@@ -27,4 +27,12 @@ public final class NotificationPreferences {
     private static SharedPreferences preferences(Context context) {
         return context.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
+
+    public static int getRetentionDays(Context context) {
+        return preferences(context).getInt("retention_days", 0);
+    }
+
+    public static void setRetentionDays(Context context, int days) {
+        preferences(context).edit().putInt("retention_days", days).apply();
+    }
 }

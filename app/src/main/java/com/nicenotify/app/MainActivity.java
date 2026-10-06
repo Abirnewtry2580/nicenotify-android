@@ -13,6 +13,7 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -55,6 +56,7 @@ public final class MainActivity extends Activity {
     private int dateRange;
     private String query = "";
     private String selectedPackage = "";
+    private boolean passedPinGate;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -110,13 +112,16 @@ public final class MainActivity extends Activity {
         Button all = tabButton("All");
         Button unread = tabButton("Unread");
         Button apps = tabButton("Apps");
-        tabs.addView(all, new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(unread, new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(apps, new LinearLayout.LayoutParams(0, dp(42), 1));
+        Button settings = tabButton("Settings");
+        tabs.addView(all, new LinearLayout.LayoutParams(0, dp(40), 1));
+        tabs.addView(unread, new LinearLayout.LayoutParams(0, dp(40), 1));
+        tabs.addView(apps, new LinearLayout.LayoutParams(0, dp(40), 1));
+        tabs.addView(settings, new LinearLayout.LayoutParams(0, dp(40), 1));
         page.addView(tabs);
         all.setOnClickListener(v -> { mode = 0; render(); });
         unread.setOnClickListener(v -> { mode = 1; render(); });
         apps.setOnClickListener(v -> { mode = 2; render(); });
+        settings.setOnClickListener(v -> { mode = 3; render(); });
 
         search = new EditText(this);
         search.setSingleLine(true);
@@ -203,7 +208,9 @@ public final class MainActivity extends Activity {
 
     private void loadHistory() {
         reads.execute(() -> {
-            List<NotificationRecord> result = NotificationDatabase.getInstance(getApplicationContext()).recent(1000);
+            NotificationDatabase database = NotificationDatabase.getInstance(getApplicationContext());
+            database.pruneOlderThanDays(NotificationPreferences.getRetentionDays(getApplicationContext()));
+            List<NotificationRecord> result = database.recent(1000);
             mainHandler.post(() -> {
                 if (isFinishing()) return;
                 records = result;
@@ -216,10 +223,15 @@ public final class MainActivity extends Activity {
     private void render() {
         if (content == null) return;
         content.removeAllViews();
-        appFilter.setVisibility(mode == 2 ? View.GONE : View.VISIBLE);
-        dateFilter.setVisibility(mode == 2 ? View.GONE : View.VISIBLE);
-        search.setHint(mode == 2 ? "Search apps" : "Search notifications");
-        if (mode == 2) renderApps(); else renderNotifications();
+        boolean appMode = mode == 2;
+        boolean settingsMode = mode == 3;
+        appFilter.setVisibility(appMode || settingsMode ? View.GONE : View.VISIBLE);
+        dateFilter.setVisibility(appMode || settingsMode ? View.GONE : View.VISIBLE);
+        search.setVisibility(settingsMode ? View.GONE : View.VISIBLE);
+        search.setHint(appMode ? "Search apps" : "Search notifications");
+        if (appMode) renderApps();
+        else if (settingsMode) renderSettings();
+        else renderNotifications();
     }
 
     private void renderNotifications() {
@@ -385,6 +397,180 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void renderSettings() {
+        addSettingCard("Privacy on this device", "Notification text is encrypted with an Android Keystore key. No account or cloud sync is used.");
+        addSettingAction("App lock", PinManager.hasPin(this) ? "Change PIN" : "Set PIN", this::showPinSettingsDialog);
+        if (PinManager.hasPin(this)) addSettingAction("App lock", "Remove PIN", this::showRemovePinDialog);
+        int days = NotificationPreferences.getRetentionDays(this);
+        String retention = days == 0 ? "Never" : days + " days";
+        addSettingAction("Auto-delete history", retention, this::showRetentionDialog);
+        addSettingAction("App capture choices", "Choose apps", () -> { mode = 2; render(); });
+        addSettingAction("Saved history", "Delete all", this::confirmClearHistory);
+    }
+
+    private void addSettingAction(String titleText, String actionText, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(13), dp(12), dp(12), dp(12));
+        row.setBackground(roundRect(CARD, dp(13)));
+        LinearLayout.LayoutParams params = wrap();
+        params.bottomMargin = dp(8);
+        content.addView(row, params);
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        row.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button button = smallButton(actionText);
+        row.addView(button);
+        button.setOnClickListener(v -> action.run());
+    }
+
+    private void addSettingCard(String titleText, String bodyText) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(13), dp(12), dp(13), dp(12));
+        card.setBackground(roundRect(CARD, dp(13)));
+        LinearLayout.LayoutParams params = wrap();
+        params.bottomMargin = dp(8);
+        content.addView(card, params);
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextColor(ACCENT);
+        title.setTextSize(13);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+        TextView body = new TextView(this);
+        body.setText(bodyText);
+        body.setTextColor(MUTED);
+        body.setTextSize(12);
+        LinearLayout.LayoutParams bodyParams = wrap();
+        bodyParams.topMargin = dp(5);
+        card.addView(body, bodyParams);
+    }
+
+    private void showRetentionDialog() {
+        String[] labels = {"Never", "7 days", "30 days", "90 days"};
+        int[] days = {0, 7, 30, 90};
+        int selected = 0;
+        int current = NotificationPreferences.getRetentionDays(this);
+        for (int i = 0; i < days.length; i++) if (days[i] == current) selected = i;
+        new AlertDialog.Builder(this).setTitle("Auto-delete saved history")
+                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                    NotificationPreferences.setRetentionDays(this, days[which]);
+                    reads.execute(() -> NotificationDatabase.getInstance(getApplicationContext()).pruneOlderThanDays(days[which]));
+                    dialog.dismiss();
+                    loadHistory();
+                    render();
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void confirmClearHistory() {
+        new AlertDialog.Builder(this).setTitle("Delete all saved history?")
+                .setMessage("This permanently deletes saved notification records on this device. Active notifications will not be dismissed.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete all", (dialog, which) -> reads.execute(() -> {
+                    NotificationDatabase.getInstance(getApplicationContext()).clearAll();
+                    loadHistory();
+                })).show();
+    }
+
+    private void showPinSettingsDialog() {
+        boolean changing = PinManager.hasPin(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(4), dp(16), 0);
+        EditText oldPin = null;
+        if (changing) {
+            oldPin = pinInput("Current PIN");
+            box.addView(oldPin, wrap());
+        }
+        EditText nextPin = pinInput("New PIN (at least 4 digits)");
+        EditText confirmPin = pinInput("Confirm new PIN");
+        box.addView(nextPin, wrap());
+        LinearLayout.LayoutParams confirmParams = wrap();
+        confirmParams.topMargin = dp(8);
+        box.addView(confirmPin, confirmParams);
+        EditText finalOldPin = oldPin;
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(changing ? "Change app PIN" : "Set app PIN")
+                .setView(box).setNegativeButton("Cancel", null).setPositiveButton("Save", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String newValue = nextPin.getText().toString();
+            if (changing && !PinManager.verify(this, finalOldPin.getText().toString())) {
+                finalOldPin.setError("Current PIN is incorrect");
+                return;
+            }
+            if (newValue.length() < 4 || !newValue.matches("[0-9]+")) {
+                nextPin.setError("Use at least 4 digits");
+                return;
+            }
+            if (!newValue.equals(confirmPin.getText().toString())) {
+                confirmPin.setError("PINs do not match");
+                return;
+            }
+            try {
+                PinManager.setPin(this, newValue);
+                passedPinGate = true;
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+                Toast.makeText(this, "App lock enabled.", Toast.LENGTH_SHORT).show();
+                dialog.dismiss();
+                render();
+            } catch (Exception e) {
+                Toast.makeText(this, "Could not save the app PIN.", Toast.LENGTH_SHORT).show();
+            }
+        }));
+        dialog.show();
+        dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+    }
+
+    private void showRemovePinDialog() {
+        EditText pin = pinInput("Current PIN");
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Remove app PIN").setView(pin)
+                .setNegativeButton("Cancel", null).setPositiveButton("Remove", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            if (!PinManager.verify(this, pin.getText().toString())) {
+                pin.setError("PIN is incorrect");
+                return;
+            }
+            PinManager.clear(this);
+            passedPinGate = true;
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            Toast.makeText(this, "App lock removed.", Toast.LENGTH_SHORT).show();
+            dialog.dismiss();
+            render();
+        }));
+        dialog.show();
+    }
+
+    private EditText pinInput(String hint) {
+        EditText input = new EditText(this);
+        input.setHint(hint);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setTextColor(Color.WHITE);
+        input.setHintTextColor(MUTED);
+        input.setSingleLine(true);
+        return input;
+    }
+
+    private void showPinGate() {
+        EditText pin = pinInput("Enter your PIN");
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("NiceNotify is locked")
+                .setMessage("Enter your app PIN to view notification history.")
+                .setView(pin).setCancelable(false).setPositiveButton("Unlock", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            if (PinManager.verify(this, pin.getText().toString())) {
+                passedPinGate = true;
+                dialog.dismiss();
+            } else {
+                pin.setError("Incorrect PIN");
+                pin.setText("");
+            }
+        }));
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.show();
+    }
+
     private void addEmptyState(String titleText, String bodyText) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -467,7 +653,20 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateAccessBanner();
+        if (PinManager.hasPin(this)) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            if (!passedPinGate) showPinGate();
+        } else {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            passedPinGate = true;
+        }
         loadHistory();
+    }
+
+    @Override
+    protected void onStop() {
+        passedPinGate = false;
+        super.onStop();
     }
 
     @Override

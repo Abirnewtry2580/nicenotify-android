@@ -12,11 +12,33 @@ import java.util.concurrent.Executors;
 
 /** Receives system notifications after the user enables Notification Access. */
 public final class NotificationCaptureService extends NotificationListenerService {
+    private static volatile NotificationCaptureService activeService;
     private final ExecutorService writes = Executors.newSingleThreadExecutor();
+
+    @Override
+    public void onListenerConnected() {
+        activeService = this;
+        super.onListenerConnected();
+    }
+
+    static boolean dismiss(String key) {
+        NotificationCaptureService service = activeService;
+        if (service == null || key == null) return false;
+        service.cancelNotification(key);
+        return true;
+    }
+
+    static boolean clearActive() {
+        NotificationCaptureService service = activeService;
+        if (service == null) return false;
+        service.cancelAllNotifications();
+        return true;
+    }
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null || sbn.getPackageName() == null || getPackageName().equals(sbn.getPackageName())) return;
+        if (NotificationPreferences.isExcluded(this, sbn.getPackageName())) return;
 
         Notification notification = sbn.getNotification();
         Bundle extras = notification == null ? null : notification.extras;
@@ -84,6 +106,7 @@ public final class NotificationCaptureService extends NotificationListenerServic
 
     @Override
     public void onDestroy() {
+        if (activeService == this) activeService = null;
         writes.shutdown();
         super.onDestroy();
     }

@@ -14,15 +14,8 @@ android {
         versionName '0.1.0'
     }
 
-    splits {
-        abi {
-            enable true
-            reset()
-            include 'armeabi-v7a', 'arm64-v8a'
-            universalApk false
-        }
-    }
-
+    // This app contains only Java code and Android framework APIs, so one APK
+    // installs on both 32-bit and 64-bit ARM devices.
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

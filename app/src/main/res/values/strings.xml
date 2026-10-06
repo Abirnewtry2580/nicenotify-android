@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">NiceNotify</string>
+    <string name="home_subtitle">Private notification history</string>
+    <string name="enable_access">Enable notification access</string>
+    <string name="permission_explanation">Android asks you to enable Notification Access in Settings so NiceNotify can save new alerts. Notification history will stay on this device.</string>
+    <string name="notification_access_label">Save notification history on this device</string>
+</resources>

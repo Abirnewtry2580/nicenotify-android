@@ -64,12 +64,12 @@ public final class NotificationCaptureService extends NotificationListenerServic
         if (messages == null) return "";
         StringBuilder result = new StringBuilder();
         for (Parcelable item : messages) {
-            if (!(item instanceof Notification.MessagingStyle.Message)) continue;
-            Notification.MessagingStyle.Message message = (Notification.MessagingStyle.Message) item;
-            CharSequence messageText = message.getText();
+            if (!(item instanceof Bundle)) continue;
+            Bundle message = (Bundle) item;
+            CharSequence messageText = message.getCharSequence("text");
             if (messageText == null || messageText.length() == 0) continue;
             if (result.length() > 0) result.append('\n');
-            CharSequence sender = message.getSender();
+            CharSequence sender = message.getCharSequence("sender");
             if (sender != null && sender.length() > 0) result.append(sender).append(": ");
             result.append(messageText);
         }
